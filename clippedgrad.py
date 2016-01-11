@@ -22,8 +22,9 @@ class ClippedAdagradOptimizer(tf.train.AdagradOptimizer):
     def _clip_grad(self, grad, var):
         acc = self.get_slot(var, "accumulator")
         lr = self._learning_rate_tensor
-        eps = 10e-8
+        eps = 10e-4
         eta = 10e+8
+        grad = tf.clip_by_value(grad, -0.01, 0.01)
         sqdiv = tf.pow(lr, 2) - tf.pow(var, 2)
         #if sqdiv < 0  the next var absolutely become positive
         penalty = tf.to_float(tf.less(sqdiv, 0)) * eta

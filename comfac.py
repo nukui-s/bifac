@@ -163,6 +163,8 @@ class ComFac(object):
                                                 sparse_values=weights,
                                                 sparse_indices=edge_list)
 
+            self.D = 1 / tf.diag(tf.reduce_sum(X, reduction_indices=1))
+
             initializer_u = tf.random_uniform_initializer(minval=0.0,
                                                           maxval=2/N)
             self.U = U = tf.get_variable(name="U", shape=[N, K],
@@ -176,8 +178,8 @@ class ComFac(object):
             with tf.name_scope("l2_loss"):
                 Ut = tf.transpose(U)
                 self.Y = Y = tf.matmul(U, Ut)
-                X_normalized = X / tf.reduce_sum(X)
-                self.l2_loss = l2_loss = tf.nn.l2_loss(X_normalized - Y) / (N*N)
+                #X_normalized = X / tf.reduce_sum(X)
+                self.l2_loss = l2_loss = tf.nn.l2_loss(X - Y) / (N*N)
                 tf.scalar_summary("l2_loss", l2_loss)
 
             pair_constraints = 0
@@ -219,7 +221,7 @@ class ComFac(object):
             tf.scalar_summary("pair_constraints", pair_constraints)
 
             with tf.name_scope("cost_func"):
-                self.cost = cost = l2_loss + lambda_c*pair_constraints
+                self.cost = cost = l2_loss
 
             self.opt = ClippedAdagradOptimizer(lr).minimize(cost)
             #self.opt = ClippedGDOptimizer(lr).minimize(cost)
@@ -334,11 +336,11 @@ if __name__ == '__main__':
     #elist = pd.read_pickle("data/karate.pkl")
     #ans = pd.read_pickle("data/karate_com.pkl")
     elist, ans = pd.read_pickle("data/dolphin.pkl")
-    C = get_constarints(ans,30,1.0)
-    model = ComFac(elist, 2, learning_rate=100.0, threads=8, constraints=C)
+    C = get_constarints(ans,30,0.0)
+    model = ComFac(elist, 2, learning_rate=1.0, threads=8, constraints=C)
     start = time.time()
     U = model.run(logdir="logkarate",stop_threshold=10e-12,
-                    lambda_step=0.05, iter_max=10000, max_lambda=0.3,
+                    lambda_step=0.05, iter_max=1000, max_lambda=0.3,
                     max_lambda_c=0.01, lambda_c_step=0.0)
     end = time.time()
     #Y = np.matmul(U, np.matmul(np.diag(z),U.T))

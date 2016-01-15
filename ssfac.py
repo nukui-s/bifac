@@ -10,6 +10,7 @@ import pandas as pd
 from itertools import chain
 import numpy as np
 import tensorflow as tf
+from clippedgrad import ClippedAdagradOptimizer
 
 class SSFac(object):
     """Class for NMF-based Community Detection for Unipartite Networks
@@ -33,6 +34,7 @@ class SSFac(object):
                                                 dtype=np.float32)
         self.lambda_c = lambda_c
         self.threads = threads
+        self.learning_rate = learning_rate
         self._setup_graph()
 
     def _setup_graph(self):
@@ -45,6 +47,7 @@ class SSFac(object):
         rev_edge_list = [(n2, n1) for n1, n2 in edge_list]
         edge_list = edge_list + rev_edge_list
         weights = np.append(weights, weights)
+        lr = self.learning_rate
 
         self._graph = tf.Graph()
         with self._graph.as_default():
@@ -54,15 +57,15 @@ class SSFac(object):
                                                 sparse_values=weights,
                                                 sparse_indices=edge_list)
 
+            with tf.name_scope("D"):
+                self.D = D = tf.diag(tf.reduce_sum(X, reduction_indices=1))
+
             u_mean = tf.to_float(tf.sqrt(2.0*sum_weight) / N * K)
             initializer_u = tf.random_uniform_initializer(minval=0.0,
                                                           maxval=2*u_mean)
             self.U = U = tf.get_variable(name="U", shape=[N, K],
                                         initializer=initializer_u)
-            self.H = H = tf.get_variable(name="H", shape=[K, N],
-                                        initializer=initializer_u)
             tf.histogram_summary("U", U)
-            tf.histogram_summary("H", H)
 
             if self.constraints:
                 c_pairs = self.constraint_pairs
@@ -85,29 +88,32 @@ class SSFac(object):
             with tf.name_scope("B"):
                 self.B = B = I_N - C
 
-            Ht = tf.transpose(H)
-            XHt = tf.matmul(X, Ht, a_is_sparse=True)
-            BtB = tf.matmul(B, B, a_is_sparse=True, b_is_sparse=True,
-                            transpose_a=True)
-            self.BtBU = BtBU = tf.matmul(BtB, U, a_is_sparse=True)
-            HtH = tf.matmul(H, Ht)
-            UHHt = tf.matmul(U, HtH)
-            U_new = (XHt / (UHHt + lambda_c*BtBU)) * U
-            self.update_U = U.assign(U_new)
+            #Ht = tf.transpose(H)
+            #XHt = tf.matmul(X, Ht, a_is_sparse=True)
+            #BtB = tf.matmul(B, B, a_is_sparse=True, b_is_sparse=True,
+            #                transpose_a=True)
+            #self.BtBU = BtBU = tf.matmul(BtB, U, a_is_sparse=True)
+            #HtH = tf.matmul(H, Ht)
+            #UHHt = tf.matmul(U, HtH)
+            #U_new = (XHt / (UHHt + lambda_c*BtBU)) * U
+            #self.update_U = U.assign(U_new)
 
-            Ut = tf.transpose(U)
-            UtX = tf.matmul(Ut, X, b_is_sparse=True)
-            UtU = tf.matmul(Ut, U)
-            UtUH = tf.matmul(UtU, H)
-            HBtB = tf.matmul(H, BtB, b_is_sparse=True)
-            H_new = (UtX / (UtUH + lambda_c*HBtB)) * H
-            self.update_H = H.assign(H_new)
+            #Ut = tf.transpose(U)
+            #UtX = tf.matmul(Ut, X, b_is_sparse=True)
+            #UtU = tf.matmul(Ut, U)
+            #tUH = tf.matmul(UtU, H)
+            #HBtB = tf.matmul(H, BtB, b_is_sparse=True)
+            #H_new = (UtX / (UtUH + lambda_c*HBtB)) * H
+            #self.update_H = H.assign(H_new)
 
-            UH = tf.matmul(U, H)
-            self.error = err = tf.nn.l2_loss(X - UH)
+            #UH = tf.matmul(U, H)
+            Y = tf.matmul(U, U, transpose_b=True)
+            self.error = err = tf.nn.l2_loss(X - Y) / N
+
             self.cnst_err = cnst_err = \
                             tf.nn.l2_loss(tf.matmul(B, U, a_is_sparse=True))
-            self.total_cost = err + cnst_err
+            self.total_cost = total_cost = err + lambda_c*cnst_err
+            self.optimize = ClippedAdagradOptimizer(lr).minimize(total_cost)
             tf.scalar_summary("error", err)
             tf.scalar_summary("constraint_err", cnst_err)
             tf.scalar_summary("total_cost", self.total_cost)
@@ -118,7 +124,7 @@ class SSFac(object):
                                     intra_op_parallelism_threads=self.threads)
             self.sess = tf.Session(config=config)
 
-    def run(self, iter_max=100, logdir=None, stop_threshold=0.1):
+    def run_mu(self, iter_max=100, logdir=None, stop_threshold=0.1):
         sess = self.sess
         if logdir:
             writer = tf.train.SummaryWriter(logdir, sess.graph_def)
@@ -136,6 +142,26 @@ class SSFac(object):
             if np.abs(pre_cost - cost) < stop_threshold:
                 break
             pre_cost = cost
+        U = sess.run(self.U)
+        return U
+
+    def run(self, iter_max=100, logdir=None, stop_threshold=0.01):
+        sess = self.sess
+        if logdir:
+            writer = tf.train.SummaryWriter(logdir, sess.graph_def)
+        else:
+            writer = None
+        sess.run(self.init_op)
+        pre_cost = 0
+        for i in range(iter_max):
+            cost, sm, _ = sess.run([self.total_cost, self.summary,
+                                    self.optimize])
+            if writer:
+                writer.add_summary(sm, i)
+            if np.abs(pre_cost - cost) < stop_threshold:
+                break
+            pre_cost = cost
+        print("cost:",cost)
         U = sess.run(self.U)
         return U
 
@@ -165,10 +191,10 @@ def get_constarints(ans, npairs, strength):
         if len(cst) == npairs: break
     return cst
 
-def get_constarints_all(ans, nn, strength):
+def get_constarints_all(ans, nn, npairs, strength):
     import random
     from itertools import combinations
-    nodes = list(range(nn))
+    nodes = list(range(len(ans)))
     random.shuffle(nodes)
     cst_nodes = nodes[:nn]
     cst = []
@@ -177,9 +203,8 @@ def get_constarints_all(ans, nn, strength):
         c2 = ans[n2]
         if c1 == c2:
             cst.append((n1,n2,strength))
-        else:
-            cst.append((n1,n2,-strength))
-    return cst
+    random.shuffle(cst)
+    return cst[:npairs]
 
 def check_satisfy(com, cst, U, verbose=False):
     stf = 0
@@ -193,6 +218,23 @@ def check_satisfy(com, cst, U, verbose=False):
             print((c1==c2),U[n1],U[n2])
     print(stf,nn)
 
+def get_candidates(com, ans, npairs=100):
+    N = len(ans)
+    import random
+    cand = []
+    while True:
+        n1 = random.randint(0, N-1)
+        n2 = random.randint(0, N-1)
+        c1_1 = com[n1]
+        c1_2 = com[n2]
+        c2_1 = ans[n1]
+        c2_2 = ans[n2]
+        if (c1_1 != c1_2)and(c2_1 == c2_2):
+            cand.append((n1,n2))
+            if len(cand) >= npairs:
+                break
+    return cand
+
 if __name__ == '__main__':
     import os
     import time
@@ -202,10 +244,12 @@ if __name__ == '__main__':
     #elist = pd.read_pickle("data/karate.pkl")
     #ans = pd.read_pickle("data/karate_com.pkl")
     elist, ans = pd.read_pickle("data/dolphin.pkl")
-    C = get_constarints(ans,100,1.0)
-    model = SSFac(elist, 2, constraints=C, lambda_c=0)
+    pairs = pd.read_pickle("pair_candidates_dol.pkl")
+    C = [(n1,n2,10.0) for n1, n2 in pairs][:20]
+    #C = get_constarints_all(ans,50,10,10.0)
+    model = SSFac(elist, 2, constraints=C, lambda_c=1.0)
     start = time.time()
-    U = model.run(logdir="logkarate")
+    U = model.run(iter_max=2000, logdir="logkarate", stop_threshold=0.001)
     end = time.time()
     com = model.get_hard_communities()
     nmi = normalized_mutual_info_score(com, ans)

@@ -50,7 +50,7 @@ class SSFac(object):
         lr = self.learning_rate
 
         self._graph = tf.Graph()
-        with self._graph.as_default():
+        with self._graph.as_default() as g:
 
             with tf.name_scope("X"):
                 self.X = X = tf.sparse_to_dense(output_shape=[N,N],
@@ -58,9 +58,9 @@ class SSFac(object):
                                                 sparse_indices=edge_list)
 
             with tf.name_scope("D"):
-                self.D = D = tf.diag(tf.reduce_sum(X, reduction_indices=1))
+                self.D = D = tf.diag(1/tf.reduce_sum(X, reduction_indices=1))
 
-            u_mean = tf.to_float(tf.sqrt(2.0*sum_weight) / N * K)
+            u_mean = tf.to_float(tf.sqrt(2.0*sum_weight) / N / K)
             initializer_u = tf.random_uniform_initializer(minval=0.0,
                                                           maxval=2*u_mean)
             self.U = U = tf.get_variable(name="U", shape=[N, K],
@@ -86,7 +86,8 @@ class SSFac(object):
                 self.C = C = tf.matmul(C_suminv, C_,
                                        a_is_sparse=True, b_is_sparse=True)
             with tf.name_scope("B"):
-                self.B = B = I_N - C
+                self.B = B = tf.matmul(I_N - C, D)
+                #self.B = B = I_N - C
 
             #Ht = tf.transpose(H)
             #XHt = tf.matmul(X, Ht, a_is_sparse=True)
@@ -113,7 +114,12 @@ class SSFac(object):
             self.cnst_err = cnst_err = \
                             tf.nn.l2_loss(tf.matmul(B, U, a_is_sparse=True))
             self.total_cost = total_cost = err + lambda_c*cnst_err
-            self.optimize = ClippedAdagradOptimizer(lr).minimize(total_cost)
+            optimizer = tf.train.AdamOptimizer(lr)
+            self.optimize = optimizer.minimize(total_cost)
+            with g.control_dependencies([self.optimize]):
+                #clip op must be executed after optimization
+                self.clip_nn = U.assign(tf.maximum(U, 0))
+
             tf.scalar_summary("error", err)
             tf.scalar_summary("constraint_err", cnst_err)
             tf.scalar_summary("total_cost", self.total_cost)
@@ -154,14 +160,16 @@ class SSFac(object):
         sess.run(self.init_op)
         pre_cost = 0
         for i in range(iter_max):
-            cost, sm, _ = sess.run([self.total_cost, self.summary,
-                                    self.optimize])
+            cost, sm, _, _ = sess.run([self.total_cost, self.summary,
+                                       self.optimize, self.clip_nn])
             if writer:
                 writer.add_summary(sm, i)
             if np.abs(pre_cost - cost) < stop_threshold:
                 break
             pre_cost = cost
         print("cost:",cost)
+        print("Reconstruction Error:", sess.run(self.error))
+        print("Constraint Error:", sess.run(self.cnst_err))
         U = sess.run(self.U)
         return U
 
@@ -241,13 +249,14 @@ if __name__ == '__main__':
     import pandas as pd
     from sklearn.metrics import normalized_mutual_info_score
     os.system("rm -rf logkarate")
-    #elist = pd.read_pickle("data/karate.pkl")
-    #ans = pd.read_pickle("data/karate_com.pkl")
-    elist, ans = pd.read_pickle("data/dolphin.pkl")
+    elist = pd.read_pickle("data/karate.pkl")
+    ans = pd.read_pickle("data/karate_com.pkl")
+    #elist, ans = pd.read_pickle("data/karate.pkl")
     pairs = pd.read_pickle("pair_candidates_dol.pkl")
-    C = [(n1,n2,10.0) for n1, n2 in pairs][:20]
-    #C = get_constarints_all(ans,50,10,10.0)
-    model = SSFac(elist, 2, constraints=C, lambda_c=1.0)
+    #C = [(n1,n2,5.0) for n1, n2 in pairs][:50]
+    #C = get_constarints_all(ans,2,6,10.0)
+    C = get_constarints(ans,2,0)
+    model = SSFac(elist, 4, constraints=C, lambda_c=1.0, learning_rate=0.1)
     start = time.time()
     U = model.run(iter_max=2000, logdir="logkarate", stop_threshold=0.001)
     end = time.time()

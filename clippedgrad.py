@@ -43,6 +43,3 @@ class ClippedGDOptimizer(tf.train.GradientDescentOptimizer):
             self._learning_rate_tensor,
             grad_clipped,
             use_locking=self._use_locking).op
-
-class ClippedAdamOptimizer(tf.train.AdamOptimizer):
-    pass

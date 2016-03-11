@@ -45,6 +45,7 @@ class ComFac(object):
         lr = self.learning_rate
         K = self.K
         edge_list = self.edge_list
+        edge_list, weights = self.sort_list_for_sptensor(edge_list, weights)
         e1_list = [e1 for e1, e2 in edge_list]
         e2_list = [e2 for e1, e2 in edge_list]
 
@@ -95,6 +96,8 @@ class ComFac(object):
                 c_weights = self.constraint_weights
                 indmap = {nid: ind for ind, nid in enumerate(nodes)}
                 maped_pairs = [(indmap[i], indmap[j]) for i, j in pairs]
+                maped_pairs, c_weights = self.sort_list_for_sptensor(maped_pairs,
+                                                                    c_weights)
                 with tf.name_scope("C"):
                     #must-link is positive and cannot-link is negative
                     self.C = C = tf.sparse_to_dense(output_shape=[nn, nn],
@@ -154,6 +157,7 @@ class ComFac(object):
         edge_list = self.edge_list
         e1_list = [e1 for e1, e2 in edge_list]
         e2_list = [e2 for e1, e2 in edge_list]
+        edge_list, weights = self.sort_list_for_sptensor(edge_list, weights)
 
         self._graph = tf.Graph()
         with self._graph.as_default():
@@ -167,8 +171,11 @@ class ComFac(object):
 
             initializer_u = tf.random_uniform_initializer(minval=0.0,
                                                           maxval=2/N)
+            self.V = V = tf.get_variable(name="V", shape=[N, K],
+                                        initializer=initializer_u)
             self.U = U = tf.get_variable(name="U", shape=[N, K],
                                         initializer=initializer_u)
+            #self.U = U = tf.abs(V)
 
             tf.histogram_summary("U", U)
 
@@ -190,6 +197,8 @@ class ComFac(object):
                 c_weights = self.constraint_weights
                 indmap = {nid: ind for ind, nid in enumerate(nodes)}
                 maped_pairs = [(indmap[i], indmap[j]) for i, j in pairs]
+                maped_pairs, c_weights = self.sort_list_for_sptensor(maped_pairs,
+                                                                    c_weights)
                 with tf.name_scope("C"):
                     #must-link is positive and cannot-link is negative
                     self.C = C = tf.sparse_to_dense(output_shape=[nn, nn],
@@ -222,7 +231,6 @@ class ComFac(object):
 
             with tf.name_scope("cost_func"):
                 self.cost = cost = l2_loss
-
             self.opt = ClippedAdagradOptimizer(lr).minimize(cost)
             #self.opt = ClippedGDOptimizer(lr).minimize(cost)
             #self.opt = tf.train.AdagradOptimizer(lr).minimize(cost)
@@ -283,6 +291,18 @@ class ComFac(object):
         hard_com = soft_com.argmax(axis=0)
         return hard_com
 
+    @staticmethod
+    def sort_list_for_sptensor(elist, weights):
+        elist_n = [(i, e[0], e[1]) for i, e in enumerate(elist)]
+        elist_n.sort(key=lambda x: (x[1], x[2]))
+        indices = [i for i, _, _ in elist_n]
+        sorted_elist = [(e1, e2) for _, e1, e2 in elist_n]
+        sorted_weights = weights[indices]
+        return sorted_elist, np.array(sorted_weights)
+
+
+
+
 def get_constarints(ans, npairs, strength):
     nn = len(ans)
     cst = []
@@ -333,14 +353,14 @@ if __name__ == '__main__':
     import pandas as pd
     from sklearn.metrics import normalized_mutual_info_score
     os.system("rm -rf logkarate")
-    #elist = pd.read_pickle("data/karate.pkl")
-    #ans = pd.read_pickle("data/karate_com.pkl")
-    elist, ans = pd.read_pickle("data/dolphin.pkl")
-    C = get_constarints(ans,30,0.0)
-    model = ComFac(elist, 2, learning_rate=1.0, threads=8, constraints=C)
+    elist = pd.read_pickle("data/polbooks_edge.pkl")
+    ans = pd.read_pickle("data/polbooks_label.pkl")
+    #elist, ans = pd.read_pickle("data/edge_list.pkl")
+    C = get_constarints(ans,50,1.0)
+    model = ComFac(elist, 3, learning_rate=1.0, threads=8, constraints=C)
     start = time.time()
     U = model.run(logdir="logkarate",stop_threshold=10e-12,
-                    lambda_step=0.05, iter_max=1000, max_lambda=0.3,
+                    lambda_step=0.05, iter_max=10000, max_lambda=0.3,
                     max_lambda_c=0.01, lambda_c_step=0.0)
     end = time.time()
     #Y = np.matmul(U, np.matmul(np.diag(z),U.T))
